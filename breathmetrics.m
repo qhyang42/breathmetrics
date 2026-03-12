@@ -407,18 +407,103 @@
             if verbose
                 disp('to find breath onsets and pauses');
             end
-            
-            % Identifying pauses in data with different sampling rates
-            % require different binning criteria to identify pauses.
-            nBINS=floor(Bm.srate/100);
-            if nBINS<=20
-                nBINS=20;
+
+            peaks = Bm.inhalePeaks(:)';
+            troughs = Bm.exhaleTroughs(:)';
+            nPeaks = length(peaks);
+            nTroughs = length(troughs);
+            nSamples = length(thisResp);
+
+            if isempty(peaks) || isempty(troughs)
+                Bm.inhaleOnsets = [];
+                Bm.exhaleOnsets = [];
+                Bm.inhalePauseOnsets = [];
+                Bm.exhalePauseOnsets = [];
+                Bm.inhaleTimeToPeak = [];
+                Bm.exhaleTimeToTrough = [];
+                return
             end
-    
-            [theseInhaleOnsets, theseExhaleOnsets, ...
-                theseInhalePauseOnsets, theseExhalePauseOnsets] = ...
-                findRespiratoryPausesAndOnsets(thisResp, ...
-                Bm.inhalePeaks, Bm.exhaleTroughs,nBINS);
+
+            nBINS = floor(Bm.srate/100);
+            if nBINS <= 20
+                nBINS = 20;
+            end
+
+            [theseInhaleOnsets, ~, theseExhaleOnsets] = ...
+                findRespiratoryOnsetsNew(thisResp, Bm.srate, peaks, ...
+                troughs, nBINS);
+            [theseExhalePauseOnsets, theseInhalePauseOnsets] = ...
+                findRespiratoryPausesNew(thisResp, Bm.srate, ...
+                theseInhaleOnsets, troughs, peaks, nBINS);
+
+            theseInhaleOnsets = round(theseInhaleOnsets(:)');
+            theseExhaleOnsets = round(theseExhaleOnsets(:)');
+            theseInhalePauseOnsets = round(theseInhalePauseOnsets(:)');
+            theseExhalePauseOnsets = round(theseExhalePauseOnsets(:)');
+
+            theseInhaleOnsets = min(max(theseInhaleOnsets, 1), nSamples);
+            theseInhaleOnsets = min(theseInhaleOnsets, peaks);
+            for bi = 2:nPeaks
+                if bi - 1 <= nTroughs
+                    theseInhaleOnsets(bi) = max(theseInhaleOnsets(bi), ...
+                        troughs(bi - 1) + 1);
+                end
+            end
+
+            if isempty(theseExhaleOnsets)
+                theseExhaleOnsets = nan(1, nTroughs);
+            elseif length(theseExhaleOnsets) < nTroughs
+                theseExhaleOnsets = [theseExhaleOnsets, ...
+                    nan(1, nTroughs - length(theseExhaleOnsets))];
+            end
+            theseExhaleOnsets = theseExhaleOnsets(1:nTroughs);
+
+            nPairs = min(nPeaks, nTroughs);
+            for bi = 1:nPairs
+                if isnan(theseExhaleOnsets(bi))
+                    continue
+                end
+                theseExhaleOnsets(bi) = min(max(theseExhaleOnsets(bi), ...
+                    peaks(bi)), troughs(bi));
+            end
+
+            if isempty(theseInhalePauseOnsets)
+                theseInhalePauseOnsets = nan(1, nPeaks);
+            elseif length(theseInhalePauseOnsets) < nPeaks
+                theseInhalePauseOnsets = [theseInhalePauseOnsets, ...
+                    nan(1, nPeaks - length(theseInhalePauseOnsets))];
+            end
+            theseInhalePauseOnsets = theseInhalePauseOnsets(1:nPeaks);
+            for bi = 1:min(nPairs, length(theseInhalePauseOnsets))
+                if isnan(theseInhalePauseOnsets(bi)) || ...
+                        isnan(theseExhaleOnsets(bi))
+                    continue
+                end
+                if theseInhalePauseOnsets(bi) <= peaks(bi) || ...
+                        theseInhalePauseOnsets(bi) >= theseExhaleOnsets(bi)
+                    theseInhalePauseOnsets(bi) = nan;
+                end
+            end
+
+            if isempty(theseExhalePauseOnsets)
+                theseExhalePauseOnsets = nan(1, nTroughs);
+            elseif length(theseExhalePauseOnsets) < nTroughs
+                theseExhalePauseOnsets = [theseExhalePauseOnsets, ...
+                    nan(1, nTroughs - length(theseExhalePauseOnsets))];
+            end
+            theseExhalePauseOnsets = theseExhalePauseOnsets(1:nTroughs);
+            for bi = 1:length(theseExhalePauseOnsets)
+                if isnan(theseExhalePauseOnsets(bi))
+                    continue
+                end
+                if bi + 1 > length(theseInhaleOnsets) || ...
+                        theseExhalePauseOnsets(bi) <= troughs(bi) || ...
+                        theseExhalePauseOnsets(bi) >= ...
+                        theseInhaleOnsets(bi + 1)
+                    theseExhalePauseOnsets(bi) = nan;
+                end
+            end
+
             Bm.inhaleOnsets = theseInhaleOnsets;
             Bm.exhaleOnsets = theseExhaleOnsets;
             Bm.inhalePauseOnsets = theseInhalePauseOnsets;
@@ -429,7 +514,6 @@
             timeToPeaks=(Bm.inhalePeaks-Bm.inhaleOnsets)/Bm.srate;
             
             % sometimes no trough of exhale at last breath
-            nTroughs=length(Bm.exhaleTroughs);
             timeToTroughs=(Bm.exhaleTroughs(1:nTroughs)-Bm.exhaleOnsets(1:nTroughs))/Bm.srate;
             
             Bm.inhaleTimeToPeak=timeToPeaks;
