@@ -185,10 +185,8 @@ t = (0:n-1)'/fs;
 y0 = y - mean(y);
 
 % ----- 1-step linear: y = a + b t
-X1   = [ones(n,1), t];
-b1   = X1 \ y0;
-yhat1= X1 * b1;
-rss1 = sum((y0 - yhat1).^2);
+[b1, rss1] = fitLineFromSums(t, y0);
+yhat1 = b1(1) + b1(2) * t;
 bic1 = n*log(rss1/n) + 2*log(n);
 
 % ----- 2-step continuous hinge: y = a + b t + c * max(0, t - tau)
@@ -200,28 +198,62 @@ if n - 2*minEdge < 1
     return
 end
 
+sumT = sum(t);
+sumT2 = sum(t.^2);
+sumY = sum(y0);
+sumY2 = sum(y0.^2);
+sumTY = sum(t .* y0);
+
+suffixT = [flipud(cumsum(flipud(t))); 0];
+suffixT2 = [flipud(cumsum(flipud(t.^2))); 0];
+suffixY = [flipud(cumsum(flipud(y0))); 0];
+suffixTY = [flipud(cumsum(flipud(t .* y0))); 0];
+
 best_rss = inf;
 best = struct();
 for tauIdx = (minEdge:(n-minEdge))
-    tau   = t(tauIdx);
-    hinge = max(0, t - tau);
-    X2    = [ones(n,1), t, hinge];
-    b2    = X2 \ y0;
-    yhat2 = X2 * b2;
-    rss2  = sum((y0 - yhat2).^2);
-    if rss2 < best_rss
-        best_rss   = rss2;
-        best.beta  = b2;             % [a; b; c]
-        best.yhat  = yhat2;
-        best.tau   = tau;
-        best.tauIdx= tauIdx;
+    tau = t(tauIdx);
+    rightCount = n - tauIdx;
+    sumTRight = suffixT(tauIdx + 1);
+    sumT2Right = suffixT2(tauIdx + 1);
+    sumYRight = suffixY(tauIdx + 1);
+    sumTYRight = suffixTY(tauIdx + 1);
+
+    sumH = sumTRight - rightCount * tau;
+    sumTH = sumT2Right - tau * sumTRight;
+    sumH2 = sumT2Right - 2 * tau * sumTRight + rightCount * tau^2;
+    sumYH = sumTYRight - tau * sumYRight;
+
+    gram = [n,    sumT,  sumH; ...
+        sumT, sumT2, sumTH; ...
+        sumH, sumTH, sumH2];
+    rhs = [sumY; sumTY; sumYH];
+
+    if rcond(gram) < eps
+        continue
     end
+
+    beta = gram \ rhs;
+    rss2 = max(sumY2 - dot(beta, rhs), 0);
+    if rss2 < best_rss
+        best_rss = rss2;
+        best.beta = beta; % [a; b; c]
+        best.tau = tau;
+        best.tauIdx = tauIdx;
+    end
+end
+
+if isfinite(best_rss)
+    best.yhat = best.beta(1) + best.beta(2) * t + ...
+        best.beta(3) * max(0, t - best.tau);
+else
+    best.yhat = [];
 end
 bic2 = n*log(best_rss/n) + 4*log(n); % count tau as a parameter
 
 
 % ----- Decision + pause rule
-if bic2 < bic1
+if isfinite(best_rss) && bic2 < bic1
     b = best.beta(2); c = best.beta(3);
     slopeEarly = b;
     slopeLate  = b + c;
@@ -242,6 +274,30 @@ else
     out = pack_output(n, fs, bic1, bic2, chosen, NaN, NaN, ...
         b1(2), b1(2), false, yhat1);
 end
+end
+
+
+function [beta, rss] = fitLineFromSums(t, y)
+t = t(:);
+y = y(:);
+n = numel(y);
+
+sumT = sum(t);
+sumT2 = sum(t.^2);
+sumY = sum(y);
+sumY2 = sum(y.^2);
+sumTY = sum(t .* y);
+
+den = n * sumT2 - sumT^2;
+if den == 0
+    beta = [mean(y); 0];
+else
+    slope = (n * sumTY - sumT * sumY) / den;
+    intercept = (sumY - slope * sumT) / n;
+    beta = [intercept; slope];
+end
+
+rss = max(sumY2 - dot(beta, [sumY; sumTY]), 0);
 end
 
 

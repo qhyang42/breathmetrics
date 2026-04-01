@@ -278,35 +278,14 @@ function [inflection, SSDer] = findInflection(sig, slopeBased, ...
 
 % sig = normalize(sig);
 
-SS = zeros(length(sig), 1);
-slopes = SS;
-
-fittedVals = cell(length(sig), 1); %store the fitted vals for plottin
-
-for i = 1:length(sig)-1
-
-    %fit a line for each start point between each i and end
-    x = (i:length(sig))';
-    y = sig(i:end);
-
-    %fit line w polyfit:
-    p = polyfit(x, y, 1); %p(1) slope p(2) intercept
-
-    yfit = polyval(p,x);
-
-    fittedVals{i} = yfit;
-
-    %calc sum squared deviation
-    SS(i) = sum((y - yfit).^2);
-    slopes(i) = p(1);
-
-end
+[SS, slopes] = suffixLineFitStats(sig);
 
 %calculate SS derivative:
 SSDer = diff(SS);
 SSDer = [SSDer(1); SSDer]; %pad
 
-slopes = smoothdata(slopes, 'gaussian', round(length(sig)/20));
+smoothSpan = max(1, round(length(sig)/20));
+slopes = smoothdata(slopes, 'gaussian', smoothSpan);
 
 if slopeBased
 
@@ -414,57 +393,25 @@ end
 
 N = length(sig);
 
-SS = zeros(length(sig), 1);
-slopes = SS;
+[~, slopes] = suffixLineFitStats(sig);
 
-fittedVals = cell(length(sig), 1); %store the fitted vals for plotting
-
-for i = 1:length(sig)-1
-
-    %fit a line for each start point between each i and end
-    x = (i:length(sig))';
-    y = sig(i:end);
-
-    %fit line w polyfit:
-    p = polyfit(x, y, 1); %p(1) slope p(2) intercept
-    yfit = polyval(p, x);
-
-    fittedVals{i} = yfit;
-
-    %calc sum squared deviation
-    SS(i) = sum((y - yfit).^2);
-    slopes(i) = p(1);
-
-end
-
-slopes = smoothdata(slopes, 'gaussian', round(length(sig)/20));
+smoothSpan = max(1, round(length(sig)/20));
+slopes = smoothdata(slopes, 'gaussian', smoothSpan);
 slopes = flipud(slopes);
 
-%NOTE: monoCheck is used to enforce that we pick an inflection that is
-%monotonic (in the raw data) in the neighborhood around the candidate.
-%The code checks candidates in descending slope order.
+% NOTE: monoCheck is used to enforce that we pick an inflection that is
+% monotonic (in the raw data) in the neighborhood around the candidate.
+% Evaluate the mask once so candidate selection stays linear-time.
+monoMask = flipud(monoCheckMask(sigRaw));
+candidateSlopes = slopes;
+candidateSlopes(~monoMask) = -inf;
 
-[~, idxSort] = sort(slopes, 'descend');
-
-found = false;
-for k = 1:length(idxSort)
-    cand = idxSort(k);
-
-    % convert cand (distance from END in flipped-slope space) to index in sig
-    peakidx = N - cand + 1;
-    try
-        if monoCheck(sigRaw, peakidx)
-            inflection = peakidx;
-            found = true;
-            break
-        end
-    catch
-        % if monoCheck fails near edges, just skip this candidate
-    end
-end
-
-if ~found
-    inflection = N - idxSort(1) + 1; %fallback to max slope. TODO check if this is true
+[bestSlope, bestCand] = max(candidateSlopes);
+if isfinite(bestSlope)
+    inflection = N - bestCand + 1;
+else
+    [~, bestCand] = max(slopes);
+    inflection = N - bestCand + 1;
 end
 
 if plotIT
@@ -480,6 +427,56 @@ if plotIT
     title('findInflectionUpward: signal & chosen inflection')
 end
 
+end
+
+
+function [rss, slopes] = suffixLineFitStats(sig)
+sig = sig(:);
+N = length(sig);
+
+rss = zeros(N, 1);
+slopes = zeros(N, 1);
+if N < 2
+    return
+end
+
+x = (1:N)';
+suffixCount = (N:-1:1)';
+suffixX = flipud(cumsum(flipud(x)));
+suffixX2 = flipud(cumsum(flipud(x.^2)));
+suffixY = flipud(cumsum(flipud(sig)));
+suffixY2 = flipud(cumsum(flipud(sig.^2)));
+suffixXY = flipud(cumsum(flipud(x .* sig)));
+
+den = suffixCount .* suffixX2 - suffixX.^2;
+valid = den ~= 0;
+slopes(valid) = (suffixCount(valid) .* suffixXY(valid) - ...
+    suffixX(valid) .* suffixY(valid)) ./ den(valid);
+
+intercepts = zeros(N, 1);
+intercepts(valid) = (suffixY(valid) - slopes(valid) .* suffixX(valid)) ./ ...
+    suffixCount(valid);
+
+rss(valid) = suffixY2(valid) - ...
+    (intercepts(valid) .* suffixY(valid) + slopes(valid) .* ...
+    suffixXY(valid));
+rss = max(rss, 0);
+end
+
+
+function monoMask = monoCheckMask(vecIn2)
+vecIn2 = vecIn2(:);
+N = length(vecIn2);
+monoMask = false(N, 1);
+if N < 11
+    return
+end
+
+for peakidx = 6:(N - 5)
+    preVal = min(vecIn2(peakidx-5:peakidx-1));
+    postVal = max(vecIn2(peakidx+1:peakidx+5));
+    monoMask(peakidx) = postVal > preVal;
+end
 end
 
 
