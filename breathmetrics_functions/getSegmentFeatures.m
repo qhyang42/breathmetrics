@@ -7,11 +7,13 @@ if nargin < 3
 end
 
 signal = signal(:);
+fs = double(fs);
 
 segmentFeatures = struct( ...
     'smoothness', calculateSmoothness(signal, fs), ...
     'curvature', calculateCurvature(signal), ...
     'phase2slope', calculatePhase2Slope(signal), ...
+    'maxFlowchange', calculateMaxFlowchange(signal), ...
     'timeSymmetry', computeTimeSymmetry(signal), ...
     'smoothnessAroundPoint', NaN, ...
     'timeSymmetryAroundPoint', NaN);
@@ -43,7 +45,7 @@ end
 
 function curvature = calculateCurvature(signal)
 % Compute curvature as the mean absolute second derivative.
-if numel(signal) < 3
+if numel(signal) < 2
     curvature = NaN;
     return
 end
@@ -51,6 +53,17 @@ end
 firstDerivative = gradient(signal);
 secondDerivative = gradient(firstDerivative);
 curvature = mean(abs(secondDerivative));
+end
+
+
+function maxFlowchange = calculateMaxFlowchange(signal)
+% Compute the maximum consecutive-sample increase in the segment.
+if numel(signal) < 2
+    maxFlowchange = NaN;
+    return
+end
+
+maxFlowchange = max(diff(signal));
 end
 
 
@@ -104,7 +117,7 @@ function segment = getPointWindow(signal, pointIdx)
 windowSize = 0.05 * numel(signal);
 halfWindowSamples = round(windowSize / 2);
 startIdx = max(1, pointIdx - halfWindowSamples);
-endIdx = min(numel(signal), pointIdx + halfWindowSamples);
+endIdx = min(numel(signal), pointIdx + halfWindowSamples - 1);
 segment = signal(startIdx:endIdx);
 end
 

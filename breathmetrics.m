@@ -64,6 +64,7 @@
         exhalePauseDurations
         
         secondaryFeatures
+        shapeFeatures
         
         respiratoryPhase
         
@@ -582,6 +583,19 @@
             Bm.inhaleVolumes = inhaleVols;
             Bm.exhaleVolumes = exhaleVols;
         end
+
+        function Bm = findShapeFeatures(Bm)
+            % Calculate per-breath waveform-shape features for airflow data.
+            if isempty(Bm.baselineCorrectedRespiration)
+                error(['Baseline-corrected respiration is required to ' ...
+                    'calculate waveform-shape features.']);
+            end
+
+            Bm.shapeFeatures = calculateRespiratoryShapeFeatures( ...
+                Bm.baselineCorrectedRespiration, Bm.srate, ...
+                Bm.inhaleOnsets, Bm.inhalePeaks, Bm.exhaleTroughs, ...
+                Bm.exhaleOnsets, Bm.exhaleOffsets);
+        end
         
         function Bm = getSecondaryFeatures( Bm, verbose )
             % Estimates all features that can be caluclated using the
@@ -628,7 +642,8 @@
                 'exhaleVolumes';'inhaleDurations';
                 'exhaleDurations';'inhalePauseOnsets';
                 'inhalePauseDurations';'exhalePauseOnsets';
-                'exhalePauseDurations';'secondaryFeatures'};
+                'exhalePauseDurations';'shapeFeatures'; ...
+                'secondaryFeatures'};
             
             otherSignalCompleteFeatureSet={
                 'baselineCorrectedRespiration';'inhaleOnsets';
@@ -708,6 +723,7 @@
                 Bm.findInhaleAndExhaleOffsets(verbose);
                 Bm.findBreathAndPauseDurations();
                 Bm.findInhaleAndExhaleVolumes(verbose);
+                Bm.findShapeFeatures();
                 Bm.getSecondaryFeatures(verbose);
                 
             elseif strcmp(Bm.dataType,'humanBB') || ...
@@ -734,6 +750,7 @@
                 Bm.findInhaleAndExhaleOffsets(verbose);
                 Bm.findBreathAndPauseDurations();
                 Bm.findInhaleAndExhaleVolumes(verbose);
+                Bm.findShapeFeatures();
                 Bm.getSecondaryFeatures(verbose);
                 
             elseif strcmp(Bm.dataType,'humanBB') || ...
