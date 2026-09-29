@@ -79,7 +79,7 @@ p = polyfit(x, signal, 1);
 slope = p(1);
 end
 
-
+c
 function smoothness = calculateSmoothnessAroundPoint(signal, fs, pointIdx)
 % Compute smoothness around a specific point in the segment.
 segment = getPointWindow(signal, pointIdx);
