@@ -31,3 +31,7 @@ codegen/
 octave-workspace
 
 .DS_Store
+
+# generated parity reference (regenerate via python/make_parity_reference.m)
+python/parity_ref/
+__pycache__/
