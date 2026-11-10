@@ -1,8 +1,8 @@
-function [bm, rawVolumes] = zlpEstimateAllFeatures(resp, srate, varargin)
+function [bm, rawVolumes, zlpInfo] = zlpEstimateAllFeatures(resp, srate, varargin)
 %ZLPESTIMATEALLFEATURES  breathmetrics features from ZLP breath segmentation.
 %
 %   bm = zlpEstimateAllFeatures(resp, srate)
-%   [bm, rawVolumes] = zlpEstimateAllFeatures(resp, srate, 'Name', value, ...)
+%   [bm, rawVolumes, zlpInfo] = zlpEstimateAllFeatures(resp, srate, 'Name', value, ...)
 %
 %   Drop-in alternative to bm.estimateAllFeatures() for recordings where the
 %   stock extrema / inhale-onset detection struggles (amplitude-non-
@@ -16,6 +16,26 @@ function [bm, rawVolumes] = zlpEstimateAllFeatures(resp, srate, varargin)
 %   injected and manualAdjustPostProcess(), the class' own post-manual-edit
 %   hook, recomputes the feature set from them. Full algorithm specification
 %   and motivation: docs/zlp_segmentation.md.
+%
+%   Two stages follow the detection (both documented in
+%   docs/zlp_segmentation.md):
+%     onset refinement (ON by default, 'refineOnsets'): refineInhaleOnsets_zlp
+%       re-places each inhale onset on the stored trace itself - the foot of
+%       the rise - where the detection's onset is early, sits on a bump, or
+%       rides high on a larger inhale. Peaks, troughs and the number of
+%       breaths are unchanged. 'refineOnsets', false gives exactly the
+%       landmarks (and so the bm object) of the earlier version of this
+%       function.
+%     incomplete-exhale merge (OFF by default, 'mergeIncompleteExhales'):
+%       mergeIncompleteExhales_zlp joins an inhale to the breath before it when
+%       there has been no exhale since that breath's inhale (double inhales,
+%       staircase inhales, pause blips). The joined landmarks are injected, so
+%       the class recomputes EVERY feature (durations, volumes, pauses, shape
+%       features, secondary statistics) for each whole merged breath: the
+%       object holds one breath per merged breath. (A table that keeps the
+%       per-breath features of the detection's rows and only drops the joined
+%       rows would describe the first pulse of a merged breath; this function
+%       does not do that.)
 %
 %   INPUTS
 %   resp  : respiration trace, numeric vector, inhale positive, RAW units.
@@ -37,6 +57,25 @@ function [bm, rawVolumes] = zlpEstimateAllFeatures(resp, srate, varargin)
 %                    closer than 5 s only the first is kept, so the double
 %                    inhale segments as one breath. [] = off.
 %   'verbose'        (0) passed to the breathmetrics methods.
+%   'refineOnsets'   (true) re-place the inhale onsets on the stored trace
+%                    right after the detection (refineInhaleOnsets_zlp). The
+%                    result is checked (strictly ascending, one per detected
+%                    onset, each with its own peak after it, no two onsets
+%                    sharing a peak); a violation is an error
+%                    (zlpEstimateAllFeatures:inconsistentRefine). false = the
+%                    onsets of the detection as they were.
+%   'refineOpts'     (struct()) options struct of refineInhaleOnsets_zlp
+%                    (unknown fields error).
+%   'mergeIncompleteExhales' (false) join inhales that have no exhale since the
+%                    previous breath's inhale (mergeIncompleteExhales_zlp, run
+%                    on the paired breaths 1..n-1 after the onset refinement)
+%                    and compute the features of the merged breaths.
+%   'mergeExFrac'    (0.20) an inhale joins the breath before when the exhale
+%                    since the previous inhale is under this fraction of it.
+%   'mergeOpts'      (struct()) options struct of mergeIncompleteExhales_zlp.
+%                    If a merged breath's lowest member trough does not lie after
+%                    its merged peak, the lowest member trough that does is
+%                    used (counted in zlpInfo.merge.nTroughGuard).
 %
 %   OUTPUTS
 %   bm         : a breathmetrics object whose inhalePeaks / exhaleTroughs /
@@ -62,16 +101,39 @@ function [bm, rawVolumes] = zlpEstimateAllFeatures(resp, srate, varargin)
 %                .note documents the convention. Units remain arbitrary
 %                sensor units (not liters): within-recording comparisons are
 %                meaningful; normalize per recording for between-subject use.
+%   zlpInfo    : (optional) struct with the records of the two new stages:
+%                .refine - the check record of the onset refinement (empty
+%                  when 'refineOnsets' is false): onsetsIn / peaksIn / troughsIn
+%                  (the detection's landmarks, samples), onsetsOut / peaksOut /
+%                  troughsOut (what went into the pairing; peaks and troughs are
+%                  unchanged), nOnIn, nOnOut, nPeaksIn, nPeaksOut,
+%                  nOrphanPeaksIn, nOrphanPeaksOut, rule (cellstr aligned with
+%                  onsetsOut: '' = detection onset kept, else 'foot' | 'far' |
+%                  'level', + '+clamp'), shiftMs (refined - detected onset, ms)
+%                  and refineFn (refineInhaleOnsets_zlp's own info). onsetsOut
+%                  includes the last detected onset and onsets dropped by the
+%                  landmark pairing.
+%                .merge - empty unless 'mergeIncompleteExhales' is true, else
+%                  a struct with .merged and .info (the outputs of
+%                  mergeIncompleteExhales_zlp, on the paired breaths 1..n-1) and
+%                  .nTroughGuard.
 %
 %   REQUIREMENTS: base MATLAB R2017b+ (movmean/movstd/movmax/movmin/movsum,
-%   fillmissing) and the Signal Processing Toolbox (findpeaks, used by the
-%   'conservative' extrema mode).
+%   fillmissing), the Signal Processing Toolbox (findpeaks, used by the
+%   'conservative' extrema mode) and, for the breath merge, prctile
+%   (Statistics and Machine Learning Toolbox).
 %
 %   EXAMPLE
 %       bmDat = load('sample_data.mat');          % ships with the toolbox
 %       [bm, raw] = zlpEstimateAllFeatures(bmDat.resp, bmDat.srate);
 %       bm.plotFeatures({'extrema', 'onsets'});
 %       median(raw.inhaleVolumesRaw, 'omitnan')
+%
+%       % earlier behaviour (no onset refinement), or with the breath merge
+%       bm0 = zlpEstimateAllFeatures(bmDat.resp, bmDat.srate, 'refineOnsets', false);
+%       [bm1, ~, zi] = zlpEstimateAllFeatures(bmDat.resp, bmDat.srate, ...
+%                          'mergeIncompleteExhales', true);
+%       zi.merge.info.nMerged
 
     p = inputParser;
     p.addParameter('dataType', 'humanAirflow');
@@ -79,6 +141,11 @@ function [bm, rawVolumes] = zlpEstimateAllFeatures(resp, srate, varargin)
     p.addParameter('blankBelowFrac', []);
     p.addParameter('sighSpan', []);
     p.addParameter('verbose', 0);
+    p.addParameter('refineOnsets', true);
+    p.addParameter('refineOpts', struct());
+    p.addParameter('mergeIncompleteExhales', false);
+    p.addParameter('mergeExFrac', 0.20);
+    p.addParameter('mergeOpts', struct());
     p.parse(varargin{:});
     opt = p.Results;
 
@@ -98,6 +165,12 @@ function [bm, rawVolumes] = zlpEstimateAllFeatures(resp, srate, varargin)
         opt.blankBelowFrac, opt.sighSpan, opt.floorFrac);
     [on, pkP, trP] = findInhaleOnsets_zlp(det, srate, pk0, tr0, ...
         'kneeBacktrack', 0.4, 1.25, 0.50, 0.10);
+    zlpInfo = struct('refine', [], 'merge', []);
+    if opt.refineOnsets
+        % re-place the onsets on the stored trace (refineInhaleOnsets_zlp)
+        [on, pkP, trP, zlpInfo.refine] = applyOnsetRefinement(respFilled, det, ...
+            srate, on, pkP, trP, opt.refineOpts);
+    end
     on = round(sort(on(:)'));
     assert(numel(on) >= 3, 'zlpEstimateAllFeatures:tooFewBreaths', ...
         'only %d inhale onsets detected - not a usable respiration trace', numel(on));
@@ -125,6 +198,38 @@ function [bm, rawVolumes] = zlpEstimateAllFeatures(resp, srate, varargin)
     assert(n >= 3, 'zlpEstimateAllFeatures:tooFewBreaths', ...
         'only %d complete breaths after landmark pairing', n);
     pkA = round(pkA); trA = round(trA);
+
+    % ---- optional: join inhales that have no exhale since the previous one ----
+    % Judged on breaths 1..n-1 (windows [on(k), on(k+1)), the rows of a breath
+    % table); the last paired inhale has no closing onset and is kept as it is.
+    % The merged landmarks replace the originals below, so the class computes
+    % every feature for each whole merged breath.
+    if opt.mergeIncompleteExhales
+        [mg, mi] = mergeIncompleteExhales_zlp(respFilled, srate, on, pkA(1:n-1), ...
+            trA(1:n-1), opt.mergeExFrac, opt.mergeOpts);
+        rawBC0 = respFilled - movmean(respFilled, round(60 * srate));
+        mTr = mg.troughs; nTroughGuard = 0;
+        for q = 1:numel(mg.onsets)
+            if mTr(q) <= mg.peaks(q)
+                mem = mg.origRows{q};
+                cand = trA(mem); cand = cand(cand > mg.peaks(q));
+                [~, ic] = min(rawBC0(cand));
+                mTr(q) = cand(ic);
+                nTroughGuard = nTroughGuard + 1;
+            end
+        end
+        mg.troughs = mTr;
+        on = [mg.onsets, on(n)];
+        pkA = [mg.peaks, pkA(n)];
+        trA = [mg.troughs, trA(n)];
+        assert(all(on(1:end-1) < pkA(1:end-1) & pkA(1:end-1) < trA(1:end-1) & ...
+            trA(1:end-1) < on(2:end)), 'zlpEstimateAllFeatures:inconsistentMerge', ...
+            'merged landmarks are not in onset < peak < trough < next onset order');
+        zlpInfo.merge = struct('merged', mg, 'info', mi, 'nTroughGuard', nTroughGuard);
+        n = numel(on);
+        assert(n >= 3, 'zlpEstimateAllFeatures:tooFewBreaths', ...
+            'only %d breaths after the merge', n);
+    end
 
     % ---- inject the landmarks; the class computes everything else ----
     % Sanctioned manual-adjust path: set extrema, let the class derive its
@@ -177,4 +282,52 @@ function [bm, rawVolumes] = zlpEstimateAllFeatures(resp, srate, varargin)
                      '(60-s moving-mean baseline removed) between the same ' ...
                      'landmarks stored in bm; raw sensor units, not liters']);
     end
+end
+
+function [on, pk, tr, info] = applyOnsetRefinement(rspStored, det, fs, onIn, pkIn, trIn, refineStruct)
+% Call refineInhaleOnsets_zlp on the detection's landmarks and CHECK what it
+% returns (no repair: a violation is an error). Contract: onsets finite, inside
+% the trace, strictly ascending after rounding; every onset has a peak after it;
+% the first peak after onset k lies before onset k+1 (two onsets never share a
+% peak). The refinement keeps peaks and troughs ([] returned = the input is
+% kept) and returns the onsets one-to-one. info = the check record.
+    onIn = double(onIn(:)'); pkIn = double(pkIn(:)'); trIn = double(trIn(:)');
+    [on2, pk2, tr2, rinfo] = refineInhaleOnsets_zlp(rspStored, det, fs, onIn, pkIn, trIn, refineStruct);
+    N = numel(rspStored);
+    if isempty(pk2), pk2 = pkIn; end
+    if isempty(tr2), tr2 = trIn; end
+    on = round(double(on2(:)'));
+    pk = sort(round(double(pk2(:)'))); tr = sort(round(double(tr2(:)')));
+    bad = @(msg) error('zlpEstimateAllFeatures:inconsistentRefine', 'onset refinement result rejected: %s', msg);
+    if any(~isfinite(on)) || any(on < 1) || any(on > N), bad('onsets must be finite and inside the trace'); end
+    if any(~isfinite(pk)) || any(~isfinite(tr)), bad('peaks / troughs must be finite'); end
+    if numel(on) ~= numel(onIn), bad(sprintf('%d onsets came back for %d', numel(on), numel(onIn))); end
+    if any(diff(on) <= 0), bad('onsets must be strictly ascending after rounding (duplicates)'); end
+    nOn = numel(on); pairPk = nan(1, nOn);
+    for k = 1:nOn
+        q = pk(pk > on(k));
+        if isempty(q), bad(sprintf('onset %d (sample %d) has no peak after it', k, on(k))); end
+        pairPk(k) = q(1);
+        if k < nOn && pairPk(k) >= on(k + 1)
+            bad(sprintf('onsets %d and %d (samples %d, %d) share the peak at sample %d', k, k + 1, on(k), on(k + 1), pairPk(k)));
+        end
+    end
+    if ~isfield(rinfo, 'rule') || numel(rinfo.rule) ~= nOn || ~isfield(rinfo, 'shiftMs') || numel(rinfo.shiftMs) ~= nOn
+        bad('the refinement record does not hold one rule and one shift per onset');
+    end
+    info = struct('onsetsIn', onIn, 'peaksIn', pkIn, 'troughsIn', trIn, 'onsetsOut', on, 'peaksOut', pk, 'troughsOut', tr, ...
+        'nOnIn', numel(onIn), 'nOnOut', nOn, 'nPeaksIn', numel(pkIn), 'nPeaksOut', numel(pk), ...
+        'nOrphanPeaksIn', numel(pkIn) - numel(unique(firstAfter(onIn, pkIn))), ...
+        'nOrphanPeaksOut', numel(pk) - numel(unique(pairPk)), ...
+        'rule', {reshape(rinfo.rule, 1, [])}, 'shiftMs', reshape(double(rinfo.shiftMs), 1, []), 'refineFn', rinfo);
+end
+
+function p = firstAfter(on, pk)
+% the pairing used by the driver: for each onset the first peak after it
+    p = nan(1, numel(on));
+    for k = 1:numel(on)
+        q = pk(pk > on(k));
+        if ~isempty(q), p(k) = q(1); end
+    end
+    p = p(isfinite(p));
 end
