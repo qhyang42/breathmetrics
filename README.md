@@ -114,6 +114,32 @@ makes segmentation robust makes the object's own volumes incomparable across
 epochs of differing breathing depth). Full algorithm specification,
 motivation, units and caveats: [docs/zlp_segmentation.md](docs/zlp_segmentation.md).
 
+Two further stages follow the ZLP detection:
+
+* **Onset refinement** (on by default, `'refineOnsets'`): `refineInhaleOnsets_zlp`
+  re-places each inhale onset on the stored trace itself - at the foot of the rise
+  (rule `foot`), past a slow bump that precedes a quick rise (`far`), or back from an
+  inflection riding high on a larger inhale (`level`) - and moves an onset only when the
+  trace shows a definitively better one. Peaks, troughs and the number of breaths do not
+  change. On `sample_data.mat` it moves 130 of 131 onsets (median 263 ms later).
+  `'refineOnsets', false` gives exactly the landmarks of the earlier version.
+* **Incomplete-exhale merge** (off by default, `'mergeIncompleteExhales', true`):
+  `mergeIncompleteExhales_zlp` joins an inhale to the breath before it when the exhale
+  since the previous inhale is under 20 % of that inhale (double inhales, staircase
+  inhales, bumps in a pause), and the class recomputes every feature for each whole
+  merged breath. It can also be called on its own,
+  `[merged, info] = mergeIncompleteExhales_zlp(resp, srate, onsets, peaks, troughs)`.
+
+```matlab
+[bm, rawVolumes, zlpInfo] = zlpEstimateAllFeatures(resp, srate, ...
+    'mergeIncompleteExhales', true);
+zlpInfo.refine.rule       % what the refinement did to each onset
+zlpInfo.merge.info        % the merge record (nBefore, nAfter, nMerged, ...)
+```
+
+Tests: `tests/testZlpRefineAndMerge.m` (uses `sample_data.mat` and the deterministic
+synthetic trace `tests/zlpSyntheticTrace.m`).
+
 If you would like to use this code in your project, please cite:
 
     Noto, T., Zhou, G., Schuele, S., Templer, J., & Zelano, C. (2018). 
